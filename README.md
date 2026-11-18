@@ -5,7 +5,8 @@ A browser mini-game for studying for **Microsoft SC-300: Identity and Access Adm
 **Play:** open `index.html`, or use the GitHub Pages site for this repository.
 
 ## Features
-- **Campaign:** 20 domain missions, 4 domain bosses and a final boss. All 98 official objectives are covered, each by at least two different questions.
+- **Ops workspace (new in 2.0):** the main screen is a playable identity operations console. The first mission, *Monday Morning Lockout*, shows employees and attackers signing in through a simulated Conditional Access gate. Inspect each sign-in's evidence, edit the policies, press **Test** and watch the results, then confirm your understanding with a prediction on a new sign-in. The mission adapts to your Conditional Access level (Guided, Standard or Advanced) and accepts any configuration that meets the requirements.
+- **Study library:** 20 domain missions, 4 domain bosses and a final boss. All 98 official objectives are covered, each by at least two different questions.
 - **Modes:**
   - Learn: missions with hints and explanations.
   - Practice: mixed questions with feedback after each one.
@@ -19,7 +20,9 @@ A browser mini-game for studying for **Microsoft SC-300: Identity and Access Adm
 | File | Purpose |
 |---|---|
 | `index.html` | Page shell and styles |
-| `js/app.js` | Game engine |
+| `js/app.js` | Game engine (study library, adaptive difficulty, saving) |
+| `js/lab.js` | Ops workspace: Conditional Access simulator and mission loop |
+| `js/lab-missions.js` | Ops mission data (sign-ins, policies, requirements, hints) |
 | `js/content-*.js` | Questions, training bank, difficulty tags, sources, campaign structure (data only) |
 
 Adaptive thresholds are in the `ADAPT` object at the top of `js/app.js`.
