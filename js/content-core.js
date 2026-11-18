@@ -1,7 +1,7 @@
 /* Identity Defender content: core (curriculum, sources, Mission 01). Content is data only; game logic lives in app.js. */
 window.ID_CONTENT = {
  "meta": {
-  "version": "1.1.0",
+  "version": "2.0.0",
   "verified": "2026-11-18",
   "studyGuide": "SC-300 skills measured as of October 28, 2026",
   "studyGuideUrl": "https://learn.microsoft.com/en-us/credentials/certifications/resources/study-guides/sc-300",

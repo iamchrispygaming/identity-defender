@@ -69,8 +69,9 @@ Object.entries(C.items).forEach(([id, it]) => {
   if (it.fields) o.fields = it.fields.map(f => Object.assign({}, f, { options:f.options.map(normOpt) }));
   if (it.steps){ o.steps = it.steps.map(s => ({ id:s.id, text:s.t ?? s.text, why:s.w ?? s.why ?? "" })); o.start = it.start || derange(o.steps.map(s => s.id)); }
   o.domain = OBJ[o.objectives[0]] ? OBJ[o.objectives[0]].domain : "D1";
-  o.topic = topicOf(o.objectives[0]); o.difficulty = it.difficulty || 2; o.bank = !!it.bank; o.warmup = !!it.warmup;
+  o.topic = topicOf(o.objectives[0]); o.difficulty = it.difficulty || 2; o.bank = !!it.bank; o.warmup = !!it.warmup; o.lab = !!it.lab;
   ITEMS[id] = o;
+  if (o.lab) return;   // workspace checks are tracked for evidence but never served as questions
   (TOPIC_ITEMS[o.topic] = TOPIC_ITEMS[o.topic] || []).push(id);
   o.objectives.forEach(ob => { (OBJ_ITEMS[ob] = OBJ_ITEMS[ob] || []).push(id); });
 });
@@ -92,7 +93,7 @@ const meterLabel = (m, k) => (m && m.meterLabels && m.meterLabels[k]) || METER_K
 function defaultState(){
   return { schema:SCHEMA, appVersion:C.meta.version, createdAt:new Date().toISOString(), xp:0,
     profile:{ examDate:"", experience:"Not set (beginner defaults)", studyTime:"", sessionLength:"10–15 minutes", showStory:true, showClock:false, difficultyMode:"adaptive" },
-    topics:{}, adaptLog:[], evidence:[], misconceptions:{}, reviews:{}, results:[], completed:{}, runs:{}, view:{ screen:"hub" }, session:null,
+    topics:{}, adaptLog:[], evidence:[], misconceptions:{}, reviews:{}, results:[], completed:{}, runs:{}, view:{ screen:"ops" }, session:null, lab:{ seen:{}, missions:{}, run:null, introduced:true },
     achievements:{}, days:[], stats:{ corrections:0, certainCorrect:0, reviews:0, exams:0 }, exams:[] };
 }
 function migrate(d){
@@ -127,7 +128,11 @@ function migrate(d){
     r.chains = r.chains || 0; r.stretch = r.stretch || 0; r.notices = r.notices || []; });
   if (!out.topics || typeof out.topics !== "object") out.topics = rebuildTopics(out.evidence);
   if (out.session) out.session.meta = out.session.meta || {};
-  if (!out.view || !["hub","mission","session"].includes(out.view.screen)) out.view = { screen:"hub" };
+  if (!out.lab || typeof out.lab !== "object" || !out.lab.missions) out.lab = { seen:{}, missions:{}, run:null };
+  if (!d.lab || !d.lab.introduced){ out.lab = Object.assign({}, out.lab, { introduced:true }); if (!out.view || out.view.screen === "hub") out.view = { screen:"ops" }; }
+  if (out.lab.run && (!window.ID_LAB || !window.ID_LAB.missions[out.lab.run.mission] || !out.lab.run.policies)) out.lab.run = null;
+  if (out.lab.run){ out.lab.run.animating = false; }
+  if (!out.view || !["ops","hub","mission","session"].includes(out.view.screen)) out.view = { screen:"ops" };
   if (out.view.screen === "mission" && !out.runs[out.view.missionId]) out.view = { screen:"hub" };
   if (out.session && (!Array.isArray(out.session.queue) || out.session.queue.some(id => !ITEMS[id]))) out.session = null;
   if (out.view.screen === "session" && !out.session) out.view = { screen:"hub" };
@@ -168,7 +173,7 @@ function IS(id, map){
   }
   return map[id];
 }
-function mode(){ if (S.view.screen === "mission") return "learn"; if (S.view.screen === "session") return S.session.kind === "exam" ? "exam" : "practice"; return "hub"; }
+function mode(){ if (S.view.screen === "ops") return "ops"; if (S.view.screen === "mission") return "learn"; if (S.view.screen === "session") return S.session.kind === "exam" ? "exam" : "practice"; return "hub"; }
 function currentItemId(){
   if (S.view.screen === "mission"){ const st = curStep(); return st.type === "item" ? st.id : null; }
   if (S.view.screen === "session" && !S.session.finished) return S.session.queue[S.session.idx];
@@ -242,7 +247,7 @@ function recordEvidence(id, correct, hints, conf, source){
   lastAdapt = indep ? adaptRecord(id, correct, hints, conf, source) : null;
   if (S.evidence.length > 5000) S.evidence = S.evidence.slice(-5000);
   const clean = correct && hints === 0 && conf !== "guess";
-  schedule(id, clean, correct);
+  if (!item.lab) schedule(id, clean, correct);
   if (correct && conf === "sure") S.stats.certainCorrect++;
   markDay();
 }
@@ -258,7 +263,7 @@ function logMisconceptions(item, st){
     m.count++; m.last = localDate(); S.misconceptions[o.misconception] = m;
   });
 }
-const dueReviews = () => Object.entries(S.reviews).filter(([id, r]) => ITEMS[id] && r.due <= localDate());
+const dueReviews = () => Object.entries(S.reviews).filter(([id, r]) => ITEMS[id] && !ITEMS[id].lab && r.due <= localDate());
 function lastSeen(id){ for (let i = S.evidence.length-1; i >= 0; i--) if (S.evidence[i].item === id) return S.evidence[i].date; return ""; }
 function siblings(id){
   const item = ITEMS[id];
@@ -496,6 +501,7 @@ function moveStep(t){
 
 /* ---------- Actions: navigation ---------- */
 function openHub(){ S.view = { screen:"hub" }; save(); renderAll(); focusTitle(); }
+function openOps(){ S.view = { screen:"ops" }; markDay(); save(); renderAll(); focusTitle(); }
 function openMission(mid, fresh){
   if (!MISSIONS[mid]) return;
   const r = S.runs[mid];
@@ -532,7 +538,7 @@ function buildReview(limit, inScope){
     if (queue.length >= limit) break;
     const it = ITEMS[id];
     // A different scenario on the same objectives, at the topic's current level; the same item only as a last resort
-    const pick = pickItem(it.topic, targetLevel(it.topic), { exclude:new Set([...used, id]), preferObjs:it.objectives }) || (used.has(id) ? null : id);
+    const pick = pickItem(it.topic, targetLevel(it.topic), { exclude:new Set([...used, id]), preferObjs:it.objectives }) || (used.has(id) || ITEMS[id].lab ? null : id);
     if (!pick || used.has(pick)) continue;
     used.add(pick); queue.push(pick); reviewFor[pick] = id; meta[pick] = { role:"review", forItem:id };
   }
@@ -568,11 +574,11 @@ function buildExam(n){
     const quota = { 1:Math.round(counts[k]*EXAM_MIX[1]), 3:Math.round(counts[k]*EXAM_MIX[3]) }; quota[2] = counts[k] - quota[1] - quota[3];
     const picked = [];
     [3,2,1].forEach(d => {
-      const byTopic = {}; shuffle(Object.keys(ITEMS).filter(id => ITEMS[id].domain === k && ITEMS[id].difficulty === d && !ITEMS[id].warmup)).forEach(id => (byTopic[ITEMS[id].topic] = byTopic[ITEMS[id].topic] || []).push(id));
+      const byTopic = {}; shuffle(Object.keys(ITEMS).filter(id => ITEMS[id].domain === k && ITEMS[id].difficulty === d && !ITEMS[id].warmup && !ITEMS[id].lab)).forEach(id => (byTopic[ITEMS[id].topic] = byTopic[ITEMS[id].topic] || []).push(id));
       const ts = shuffle(Object.keys(byTopic)); let i = 0, guard = 0;
       while (picked.filter(id => ITEMS[id].difficulty === d).length < quota[d] && guard++ < 200){ const list = byTopic[ts[i % ts.length]]; if (list && list.length) picked.push(list.shift()); i++; if (ts.every(t => !byTopic[t].length)) break; }
     });
-    const pool = shuffle(Object.keys(ITEMS).filter(id => ITEMS[id].domain === k && !picked.includes(id) && !ITEMS[id].warmup));
+    const pool = shuffle(Object.keys(ITEMS).filter(id => ITEMS[id].domain === k && !picked.includes(id) && !ITEMS[id].warmup && !ITEMS[id].lab));
     while (picked.length < counts[k] && pool.length) picked.push(pool.shift());
     queue.push(...picked);
   });
@@ -634,7 +640,7 @@ function renderTop(){
   const due = dueReviews().length;
   $("#nav-review").textContent = due ? `Review (${due})` : "Review";
   const md = mode();
-  $("#mode").textContent = { learn:"Learn mode", practice: S.session && S.session.kind === "review" ? "Review" : "Practice mode", exam:"Exam mode", hub:"Campaign" }[md] + (md === "exam" ? " · fixed mix" : adaptiveOn() ? " · Adaptive" : " · " + LEVEL_NAMES[+S.profile.difficultyMode]);
+  $("#mode").textContent = { learn:"Learn mode", practice: S.session && S.session.kind === "review" ? "Review" : "Practice mode", exam:"Exam mode", hub:"Study library", ops:"Ops workspace" }[md] + (md === "exam" ? " · fixed mix" : adaptiveOn() ? " · Adaptive" : " · " + LEVEL_NAMES[+S.profile.difficultyMode]);
   const c = $("#clock"); clearInterval(clockTimer);
   const run = RUN();
   c.hidden = !(S.profile.showClock && run);
@@ -667,6 +673,7 @@ function objectivesPanel(ids, title){
 }
 function renderRail(){
   let html = "";
+  if (S.view.screen === "ops"){ $("#rail").innerHTML = ""; return; }
   if (S.view.screen === "mission"){
     const m = MIS(), r = RUN();
     html += `<div class="panel"><h3>${esc(m.code)} · ${esc(m.title)}</h3><ol class="steps">`;
@@ -743,7 +750,8 @@ function renderHub(){
   const due = dueReviews().length, done = MISSION_ORDER.filter(mid => S.completed[mid]).length;
   const rec = recommended();
   let html = `<div class="eyebrow"><span>Halcyon Freight · Identity operations</span><span class="kind">${esc(C.meta.studyGuide)}</span></div>
-    <h2 id="case-title" tabindex="-1">Campaign</h2>
+    <h2 id="case-title" tabindex="-1">Study library</h2>
+    <div class="opslink"><div><div class="n">OPS WORKSPACE</div><h3>Monday Morning Lockout</h3><p>Hands-on Conditional Access troubleshooting. More missions are being converted; their study versions are below.</p></div><button class="btn primary" data-action="nav-ops">Open workspace →</button></div>
     <div class="tiles">
       <div class="tile"><div class="tv">${touched.size}<small>/${OBJ_LIST.length}</small></div><div class="tl">Objectives touched</div></div>
       <div class="tile"><div class="tv">${demo}</div><div class="tl">Demonstrated</div></div>
@@ -1000,7 +1008,7 @@ function renderBrief(){
       ${r.replay ? `<p class="callout">Replay run: XP is earned at half rate. Your answers still count as new evidence for mastery and reviews.</p>` : ""}</div>
     <div class="tags">${m.objectives.map(id => `<span class="tag">SC-300 ${esc(id)}</span>`).join("")}</div>
     <p class="simnote">${esc(C.meta.assumptions)}</p>
-    <div class="actions" style="margin-top:18px"><button class="btn primary" data-action="next">Start mission →</button><button class="btn" data-action="toggle-story">${S.profile.showStory ? "Hide story text" : "Show story text"}</button><button class="btn link" data-action="hub">← Campaign</button></div>`;
+    <div class="actions" style="margin-top:18px"><button class="btn primary" data-action="next">Start mission →</button><button class="btn" data-action="toggle-story">${S.profile.showStory ? "Hide story text" : "Show story text"}</button><button class="btn link" data-action="hub">← Study library</button></div>`;
 }
 function renderDebrief(){
   const m = MIS(), r = RUN();
@@ -1029,10 +1037,13 @@ function renderDebrief(){
     <div class="section"><h3>Key takeaways</h3><ul class="prose">${(m.takeaways||[]).map(t => `<li>${t}</li>`).join("")}</ul></div>
     <div class="section"><h3>Review schedule</h3><div class="tablewrap"><table class="grid log"><thead><tr><th>Item</th><th>Due</th><th>Why</th></tr></thead><tbody>${due.map(([,v]) => `<tr><td>${esc(v.title)}</td><td>${esc(v.due)}</td><td>${esc(v.reason)}</td></tr>`).join("")}</tbody></table></div></div>
     <div class="section"><h3>Next recommended</h3><div class="callout">${needs.length ? `<p style="margin:0 0 8px"><b>First:</b> a review session on or after ${esc(addDays(1))} for ${needs.map(objText).map(esc).join("; ")}. It will use different scenarios.</p>` : ""}<p style="margin:0">${next ? `<b>${esc(next.code)} · ${esc(next.title)}</b>: ${esc(next.goal)}` : "You've reached the end of the campaign. Exam drills and reviews keep it fresh."}</p></div></div>
-    <div class="actions">${next ? `<button class="btn primary" data-action="open-mission" data-mid="${next.id}">Start ${esc(next.code)} →</button>` : `<button class="btn primary" data-action="open-exam">Exam drill</button>`}<button class="btn" data-action="replay">Replay mission</button><button class="btn" data-action="hub">Campaign</button><button class="btn" data-action="copy-checkpoint">Chat checkpoint</button></div>`;
+    <div class="actions">${next ? `<button class="btn primary" data-action="open-mission" data-mid="${next.id}">Start ${esc(next.code)} →</button>` : `<button class="btn primary" data-action="open-exam">Exam drill</button>`}<button class="btn" data-action="replay">Replay mission</button><button class="btn" data-action="hub">Study library</button><button class="btn" data-action="copy-checkpoint">Chat checkpoint</button></div>`;
 }
 function renderCase(){
   const el = $("#case");
+  document.querySelector("main.app").classList.toggle("wide", S.view.screen === "ops");
+  el.classList.toggle("opsview", S.view.screen === "ops");
+  if (S.view.screen === "ops"){ window.IDLab.render(el); return; }
   if (S.view.screen === "hub") el.innerHTML = renderHub();
   else if (S.view.screen === "mission"){ const s = curStep(); el.innerHTML = s.type === "brief" ? renderBrief() : s.type === "debrief" ? renderDebrief() : renderMissionItem(s); }
   else if (S.view.screen === "session") el.innerHTML = S.session.finished ? renderSessionSummary() : renderSessionItem();
@@ -1102,6 +1113,7 @@ function checkpointText(){
     "XP "+p.totals.xp+" (Lv "+p.totals.level+") | Days studied: "+p.totals.daysStudied+" | Missions completed ("+done.length+"/"+MISSION_ORDER.length+"): "+(done.join(", ") || "none"),
     "Coverage: "+Object.entries(cov).map(([d,c]) => d.replace(/^(Implement and manage |Implement |Plan and implement |Plan and automate )/,"")+" "+(c.Learning+c["Needs review"]+c.Demonstrated)+"/"+(c["Not started"]+c.Learning+c["Needs review"]+c.Demonstrated)+" touched, "+c.Demonstrated+" demonstrated").join("; "),
     "Difficulty: "+(p.difficultyMode === "adaptive" ? "Adaptive" : "Fixed "+LEVEL_NAMES[+p.difficultyMode])+" | Topic levels: "+p.topicLevels.filter(t => t.level !== "Not started").map(t => t.topic+" "+t.level[0]+(t.guided?"(guided)":"")).join(", "),
+    "Ops workspace: "+Object.entries((S.lab && S.lab.missions) || {}).map(([k,m]) => k.toUpperCase()+" solved "+m.completed+"x, best level "+(["none","Guided","Standard","Advanced"][m.best || 0])).join("; ") + (Object.keys((S.lab && S.lab.missions) || {}).length ? "" : "not started"),
     "Recommended practice: "+p.recommendedPractice.join("; "),
     "Learning: "+(p.learning.map(short).join(", ") || "none"),
     "Needs review: "+(p.weakAreas.map(short).join(", ") || "none"),
@@ -1169,7 +1181,7 @@ function examSetupHtml(){
 /* ---------- Events ---------- */
 const actions = {
   submit, retry, reveal, hint, next:nextStep, replay:replayMission, hub:openHub,
-  "nav-hub":openHub,
+  "nav-hub":openHub, "nav-ops":openOps,
   go: t => goStep(+t.dataset.idx),
   move: t => moveStep(t),
   "open-mission": t => { const mid = t.dataset.mid; openMission(mid, t.dataset.fresh === "1"); },
@@ -1241,6 +1253,6 @@ function start(data){
   save(); renderAll();
   try { window.claude?.hot?.snapshot(() => S); } catch(e){}
 }
-window.__ID = { get state(){ return S; }, ITEMS, MISSIONS, MISSION_ORDER, TOPIC_ITEMS, ADAPT, statusFor, evaluate, exportJSON, importJSON, checkpointText, buildExam, buildReview, buildPractice, topicState, adaptRecord, pickItem, recordEvidence };
+window.__ID = { get state(){ return S; }, save, award, toast, renderTop, renderAll, markDay, openLibrary:openHub, openOps, ITEMS, MISSIONS, MISSION_ORDER, TOPIC_ITEMS, ADAPT, statusFor, evaluate, exportJSON, importJSON, checkpointText, buildExam, buildReview, buildPractice, topicState, adaptRecord, pickItem, recordEvidence };
 if (window.claude?.hot?.ready) window.claude.hot.ready(start); else start(window.claude?.hot?.data ?? {});
 })();
